@@ -19,11 +19,32 @@
         @click="handleSelect(item)"
       >
         <div class="history-content">
+          <div class="history-name-row">
+            <el-input
+              v-if="editingId === item.id"
+              v-model="item.name"
+              size="small"
+              @blur="handleSave(item)"
+              @keyup.enter="handleSave(item)"
+              class="name-input"
+              autofocus
+            />
+            <span v-else class="history-name">{{ item.name }}</span>
+          </div>
           <p class="history-text">{{ item.content }}</p>
           <span class="history-time">{{ item.time }}</span>
         </div>
         <div class="history-actions">
-          <el-button size="small" icon="Copy" @click.stop="handleCopy(item.content)" />
+          <el-button size="small" :icon="Edit" @click.stop="handleEdit(item)"
+            >编辑</el-button
+          >
+          <el-button
+            size="small"
+            :icon="Delete"
+            type="danger"
+            @click.stop="handleDelete(item.id)"
+            >删除</el-button
+          >
         </div>
       </div>
     </div>
@@ -35,58 +56,94 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
-import { ElMessage } from 'element-plus'
-import { ChatRound as MessageSquareIcon } from '@element-plus/icons-vue'
+import { ref, computed, onMounted } from "vue";
+import { ElMessage } from "element-plus";
+import {
+  ChatRound as MessageSquareIcon,
+  Edit,
+  Delete,
+} from "@element-plus/icons-vue";
+import { historyApi, sessionApi } from "@/api";
 
 const emit = defineEmits<{
-  (e: 'select', content: string): void
-}>()
+  (e: "select", content: string): void;
+}>();
 
-const searchQuery = ref('')
-const selectedId = ref('')
+const searchQuery = ref("");
+const selectedId = ref("");
+const editingId = ref<string | null>(null);
 
-const history = ref([
-  {
-    id: '1',
-    content: '你们的理财产品年化收益率是多少？',
-    time: '15:30',
-  },
-  {
-    id: '2',
-    content: '开户需要准备哪些材料？',
-    time: '15:28',
-  },
-  {
-    id: '3',
-    content: '退款政策是怎样的？',
-    time: '15:25',
-  },
-  {
-    id: '4',
-    content: '如何进行风险评估？',
-    time: '15:20',
-  },
-])
+interface HistoryItem {
+  id: string;
+  name: string;
+  content: string;
+  time: string;
+}
+
+const history = ref<HistoryItem[]>([]);
 
 const filteredHistory = computed(() => {
   if (!searchQuery.value.trim()) {
-    return history.value
+    return history.value;
   }
-  return history.value.filter((item) =>
-    item.content.toLowerCase().includes(searchQuery.value.toLowerCase())
-  )
-})
+  return history.value.filter(
+    (item) =>
+      item.content.toLowerCase().includes(searchQuery.value.toLowerCase()) ||
+      item.name.toLowerCase().includes(searchQuery.value.toLowerCase()),
+  );
+});
 
-const handleSelect = (item: typeof history.value[0]) => {
-  selectedId.value = item.id
-  emit('select', item.content)
-}
+const loadHistory = async () => {
+  try {
+    const data = await historyApi.getChatHistory({ limit: 20 });
+    const list = data as unknown as any[];
+    history.value = list.map((item: any) => ({
+      id: item.id,
+      name: item.username || "未命名会话",
+      content: item.content,
+      time: item.time,
+    }));
+  } catch {
+    history.value = [];
+  }
+};
 
-const handleCopy = (content: string) => {
-  navigator.clipboard.writeText(content)
-  ElMessage.success('已复制')
-}
+const handleSelect = (item: HistoryItem) => {
+  selectedId.value = item.id;
+  emit("select", item.content);
+};
+
+const handleEdit = (item: HistoryItem) => {
+  editingId.value = item.id;
+};
+
+const handleSave = async (item: HistoryItem) => {
+  if (!item.name.trim()) {
+    item.name = "未命名会话";
+  }
+  try {
+    await sessionApi.updateSession(item.id, { name: item.name.trim() });
+    ElMessage.success("重命名成功");
+  } catch {
+    ElMessage.error("重命名失败");
+  } finally {
+    editingId.value = null;
+  }
+};
+
+const handleDelete = async (sessionId: string) => {
+  try {
+    await sessionApi.deleteSession(sessionId);
+    history.value = history.value.filter((item) => item.id !== sessionId);
+    ElMessage.success("删除成功");
+  } catch {
+    ElMessage.error("删除失败");
+  }
+};
+
+onMounted(() => {
+  loadHistory();
+});
 </script>
 
 <style scoped>
@@ -154,9 +211,25 @@ const handleCopy = (content: string) => {
   gap: 4px;
 }
 
+.history-name-row {
+  display: flex;
+  align-items: center;
+}
+
+.name-input {
+  flex: 1;
+  max-width: 200px;
+}
+
+.history-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #111111;
+}
+
 .history-text {
   font-size: 14px;
-  color: #111111;
+  color: #626260;
   margin: 0;
   white-space: nowrap;
   overflow: hidden;
@@ -171,6 +244,8 @@ const handleCopy = (content: string) => {
 .history-actions {
   opacity: 0;
   transition: opacity 0.2s ease;
+  display: flex;
+  gap: 4px;
 }
 
 .history-item:hover .history-actions {

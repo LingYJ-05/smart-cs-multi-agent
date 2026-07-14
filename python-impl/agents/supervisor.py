@@ -7,6 +7,7 @@ Supervisor编排Agent — 中央协调者
 from __future__ import annotations
 
 import operator
+import os
 from typing import Annotated, Any, Literal, TypedDict
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
@@ -79,14 +80,18 @@ class SupervisorNode:
             *messages,
             HumanMessage(content=(
                 "请分析用户的最新消息，返回应该路由到的Agent名称。"
-                "只返回以下之一: knowledge_rag, ticket_handler, compliance_checker"
+                "只返回以下之一: knowledge_rag, ticket_handler"
+                "\n\n规则:"
+                "\n- 日常问候、咨询、闲聊 → knowledge_rag"
+                "\n- 退款、投诉、工单相关 → ticket_handler"
+                "\n- compliance_checker不是独立路由目标，所有回复都会自动经过合规审查"
             )),
         ]
 
         response = await self.llm.ainvoke(routing_prompt)
         intent = response.content.strip().lower()
 
-        valid_intents = {"knowledge_rag", "ticket_handler", "compliance_checker"}
+        valid_intents = {"knowledge_rag", "ticket_handler"}
         if intent not in valid_intents:
             intent = "knowledge_rag"
 
@@ -112,8 +117,16 @@ class SupervisorNode:
         else:
             result_parts = []
             for agent_name, result in sub_results.items():
+                if agent_name == "compliance":
+                    continue
                 if result:
-                    result_parts.append(result)
+                    if isinstance(result, dict):
+                        text = result.get("answer", result.get("response", str(result)))
+                    elif isinstance(result, str):
+                        text = result
+                    else:
+                        text = str(result)
+                    result_parts.append(text)
             final_response = "\n\n".join(result_parts) if result_parts else "抱歉，暂时无法处理您的请求，请稍后重试。"
 
         return {
@@ -131,7 +144,6 @@ def route_to_agent(state: AgentState) -> str:
     route_map = {
         "knowledge_rag": "knowledge_rag",
         "ticket_handler": "ticket_handler",
-        "compliance_checker": "compliance_check",
     }
     return route_map.get(intent, "knowledge_rag")
 
@@ -164,7 +176,26 @@ def create_supervisor_graph(
         enable_checkpointing: 是否启用检查点（支持断点恢复）
     """
     if llm is None:
-        llm = ChatOpenAI(model="gpt-4o", temperature=0)
+        deepseek_api_key = os.getenv("DEEPSEEK_API_KEY")
+        openai_api_key = os.getenv("OPENAI_API_KEY")
+        
+        if deepseek_api_key:
+            llm = ChatOpenAI(
+                model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+                temperature=0,
+                api_key=deepseek_api_key,
+                base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
+            )
+        elif openai_api_key:
+            llm = ChatOpenAI(
+                model=os.getenv("MODEL_NAME", "gpt-4o"),
+                temperature=0,
+                api_key=openai_api_key,
+                base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+            )
+        else:
+            llm = ChatOpenAI(model="gpt-4o", temperature=0)
+    
     if working_memory is None:
         working_memory = WorkingMemory()
 

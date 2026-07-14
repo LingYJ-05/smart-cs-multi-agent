@@ -37,7 +37,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, markRaw } from "vue";
+import { ref, markRaw, onMounted } from "vue";
 import {
   ChatRound,
   Setting,
@@ -45,6 +45,7 @@ import {
   Clock,
   Refresh,
 } from "@element-plus/icons-vue";
+import { metricsApi } from "@/api";
 
 interface MetricWithIcon {
   label: string;
@@ -53,52 +54,52 @@ interface MetricWithIcon {
   color: string;
 }
 
-const metrics = ref<MetricWithIcon[]>([
-  {
-    label: "今日会话数",
-    value: "128",
-    icon: markRaw(ChatRound),
-    color: "linear-gradient(135deg, #65b5ff, #4a9eff)",
-  },
-  {
-    label: "今日工具调用",
-    value: "356",
-    icon: markRaw(Setting),
-    color: "linear-gradient(135deg, #ff5600, #ff7838)",
-  },
-  {
-    label: "合规通过率",
-    value: "98.6%",
-    icon: markRaw(Lock),
-    color: "linear-gradient(135deg, #0bdf50, #0ac747)",
-  },
-  {
-    label: "平均响应时间",
-    value: "1.2s",
-    icon: markRaw(Clock),
-    color: "linear-gradient(135deg, #b3e01c, #a0c918)",
-  },
-]);
+const metrics = ref<MetricWithIcon[]>([]);
 
-const recentCalls = ref([
-  { name: "产品查询", time: "15:30:20", color: "#65b5ff" },
-  { name: "账户查询", time: "15:29:58", color: "#ff5600" },
-  { name: "政策解读", time: "15:29:31", color: "#0bdf50" },
-  { name: "计算工具", time: "15:28:45", color: "#b3e01c" },
-  { name: "产品查询", time: "15:28:12", color: "#65b5ff" },
-]);
+const recentCalls = ref<{ name: string; time: string; color: string }[]>([]);
+
+const iconMap: Record<string, typeof ChatRound> = {
+  daily_sessions: ChatRound,
+  daily_tool_calls: Setting,
+  compliance_rate: Lock,
+  avg_response_time: Clock,
+};
+
+const colorMap: Record<string, string> = {
+  daily_sessions: "linear-gradient(135deg, #65b5ff, #4a9eff)",
+  daily_tool_calls: "linear-gradient(135deg, #ff5600, #ff7838)",
+  compliance_rate: "linear-gradient(135deg, #0bdf50, #0ac747)",
+  avg_response_time: "linear-gradient(135deg, #b3e01c, #a0c918)",
+};
+
+const loadMetrics = async () => {
+  try {
+    const data = await metricsApi.getMetrics();
+    const result = data as any;
+    metrics.value = result.metrics.map((m: any) => ({
+      label: m.label,
+      value: m.value,
+      icon: markRaw(iconMap[m.metric_type] || ChatRound),
+      color: colorMap[m.metric_type] || "#65b5ff",
+    }));
+    recentCalls.value = result.recent_calls.map((call: any) => ({
+      name: call.name,
+      time: call.time,
+      color: call.success ? "#0bdf50" : "#ff5600",
+    }));
+  } catch {
+    metrics.value = [];
+    recentCalls.value = [];
+  }
+};
 
 const handleRefresh = () => {
-  metrics.value = metrics.value.map((metric) => ({
-    ...metric,
-    value:
-      typeof metric.value === "string" && metric.value.includes("%")
-        ? `${(98 + Math.random() * 2).toFixed(1)}%`
-        : typeof metric.value === "string" && metric.value.includes("s")
-          ? `${(1 + Math.random()).toFixed(1)}s`
-          : String(Math.floor(100 + Math.random() * 200)),
-  }));
+  loadMetrics();
 };
+
+onMounted(() => {
+  loadMetrics();
+});
 </script>
 
 <style scoped>

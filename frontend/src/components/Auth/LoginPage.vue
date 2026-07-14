@@ -42,8 +42,12 @@
           <div class="form-logo">
             <ChatRound class="form-bot-icon" />
           </div>
-          <h2 class="form-title">欢迎回来</h2>
-          <p class="form-subtitle">请登录您的账号</p>
+          <h2 class="form-title">
+            {{ isRegisterMode ? "创建账号" : "欢迎回来" }}
+          </h2>
+          <p class="form-subtitle">
+            {{ isRegisterMode ? "请注册您的账号" : "请登录您的账号" }}
+          </p>
         </div>
         <el-form :model="form" :rules="rules" ref="formRef" class="login-form">
           <el-form-item prop="username">
@@ -68,7 +72,25 @@
               @blur="isPasswordFocus = false"
             />
           </el-form-item>
-          <el-form-item class="form-options">
+          <el-form-item v-if="isRegisterMode" prop="captcha">
+            <div class="captcha-container">
+              <el-input
+                v-model="form.captcha"
+                placeholder="请输入验证码"
+                prefix-icon="Verification"
+                :class="['custom-input', { 'input-focus': isCaptchaFocus }]"
+                @focus="isCaptchaFocus = true"
+                @blur="isCaptchaFocus = false"
+              />
+              <img
+                :src="captchaImage"
+                alt="验证码"
+                class="captcha-image"
+                @click="refreshCaptcha"
+              />
+            </div>
+          </el-form-item>
+          <el-form-item v-if="!isRegisterMode" class="form-options">
             <el-checkbox v-model="rememberMe">记住我</el-checkbox>
             <a href="#" class="forgot-link">忘记密码?</a>
           </el-form-item>
@@ -76,18 +98,24 @@
             <el-button
               type="primary"
               :loading="loading"
-              @click="handleLogin"
+              @click="isRegisterMode ? handleRegister() : handleLogin()"
               :class="['login-btn']"
             >
-              <span v-if="!loading">登录</span>
-              <span v-else>登录中...</span>
+              <span v-if="!loading">{{
+                isRegisterMode ? "注册" : "登录"
+              }}</span>
+              <span v-else>{{
+                isRegisterMode ? "注册中..." : "登录中..."
+              }}</span>
             </el-button>
           </el-form-item>
         </el-form>
         <div class="form-footer">
           <p class="footer-text">
-            还没有账号?
-            <a href="#" class="register-link">立即注册</a>
+            {{ isRegisterMode ? "已有账号?" : "还没有账号?" }}
+            <a href="#" class="register-link" @click.prevent="toggleMode">
+              {{ isRegisterMode ? "立即登录" : "立即注册" }}
+            </a>
           </p>
         </div>
       </div>
@@ -96,10 +124,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive } from "vue";
+import { ref, reactive, computed, onMounted } from "vue";
 import { useRouter } from "vue-router";
-import { ElMessage } from "element-plus";
 import { ChatRound, Lock, Star, Timer } from "@element-plus/icons-vue";
+import { authApi } from "@/api";
 
 const router = useRouter();
 const formRef = ref();
@@ -107,16 +135,46 @@ const loading = ref(false);
 const showPassword = ref(false);
 const isUsernameFocus = ref(false);
 const isPasswordFocus = ref(false);
+const isCaptchaFocus = ref(false);
 const rememberMe = ref(false);
+const isRegisterMode = ref(false);
+const captchaImage = ref("");
+const captchaId = ref("");
 
 const form = reactive({
   username: "",
   password: "",
+  captcha: "",
 });
 
-const rules = {
-  username: [{ required: true, message: "请输入用户名", trigger: "blur" }],
-  password: [{ required: true, message: "请输入密码", trigger: "blur" }],
+const rules = computed(() => {
+  const baseRules = {
+    username: [{ required: true, message: "请输入用户名", trigger: "blur" }],
+    password: [{ required: true, message: "请输入密码", trigger: "blur" }],
+  };
+  if (isRegisterMode.value) {
+    return {
+      ...baseRules,
+      captcha: [{ required: true, message: "请输入验证码", trigger: "blur" }],
+    };
+  }
+  return baseRules;
+});
+
+const refreshCaptcha = async () => {
+  const result = await authApi.getCaptcha();
+  captchaId.value = result.captchaId;
+  captchaImage.value = result.imageUrl;
+};
+
+const toggleMode = async () => {
+  isRegisterMode.value = !isRegisterMode.value;
+  form.username = "";
+  form.password = "";
+  form.captcha = "";
+  if (isRegisterMode.value) {
+    await refreshCaptcha();
+  }
 };
 
 const handleLogin = async () => {
@@ -124,16 +182,54 @@ const handleLogin = async () => {
   if (!valid) return;
 
   loading.value = true;
-  await new Promise((resolve) => setTimeout(resolve, 800));
-  localStorage.setItem("token", "demo-token-12345");
-  localStorage.setItem(
-    "user",
-    JSON.stringify({ username: form.username || "admin", role: "管理员" }),
-  );
-  ElMessage.success("登录成功");
-  router.push("/dashboard");
-  loading.value = false;
+  try {
+    const response = await authApi.login({
+      username: form.username,
+      password: form.password,
+    });
+    localStorage.setItem("token", response.token);
+    localStorage.setItem(
+      "user",
+      JSON.stringify({ username: response.username, role: response.role }),
+    );
+    router.push("/dashboard");
+  } catch {
+  } finally {
+    loading.value = false;
+  }
 };
+
+const handleRegister = async () => {
+  const valid = await formRef.value?.validate();
+  if (!valid) return;
+
+  loading.value = true;
+  try {
+    const response = await authApi.register({
+      username: form.username,
+      password: form.password,
+      captcha_id: captchaId.value,
+      captcha_code: form.captcha,
+    });
+    localStorage.setItem("token", response.token);
+    localStorage.setItem(
+      "user",
+      JSON.stringify({ username: response.username, role: response.role }),
+    );
+    router.push("/dashboard");
+  } catch {
+    await refreshCaptcha();
+    form.captcha = "";
+  } finally {
+    loading.value = false;
+  }
+};
+
+onMounted(() => {
+  if (isRegisterMode.value) {
+    refreshCaptcha();
+  }
+});
 </script>
 
 <style scoped>
@@ -356,6 +452,28 @@ const handleLogin = async () => {
 
 .custom-input.input-focus {
   box-shadow: 0 0 0 3px rgba(255, 86, 0, 0.1);
+  border-color: #ff5600;
+}
+
+.captcha-container {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.captcha-container .custom-input {
+  flex: 1;
+}
+
+.captcha-image {
+  width: 120px;
+  height: 48px;
+  border-radius: 8px;
+  cursor: pointer;
+  border: 1px solid #dcdfe6;
+}
+
+.captcha-image:hover {
   border-color: #ff5600;
 }
 

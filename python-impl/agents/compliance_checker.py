@@ -71,6 +71,9 @@ class ComplianceCheckerAgent:
         """基于规则的快速检查（不依赖LLM，低延迟）"""
         violations = []
 
+        if isinstance(content, bytes):
+            content = content.decode('utf-8', errors='replace')
+
         for term in FORBIDDEN_TERMS:
             if term in content:
                 violations.append(f"包含违规金融用语: '{term}'")
@@ -193,7 +196,13 @@ class ComplianceCheckerAgent:
                 content_to_check += result + "\n"
 
         if not content_to_check.strip():
-            return {**state, "compliance_passed": True}
+            messages = state.get("messages", [])
+            if messages:
+                last_message = messages[-1]
+                if hasattr(last_message, "content"):
+                    content_to_check = last_message.content
+            if not content_to_check.strip():
+                return {**state, "compliance_passed": True}
 
         compliance_result = await self.full_check(content_to_check)
 

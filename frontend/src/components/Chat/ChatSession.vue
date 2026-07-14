@@ -19,47 +19,61 @@
         </el-button>
       </div>
     </div>
-    <div class="chat-messages" ref="messagesContainer">
-      <div v-for="message in messages" :key="message.id" class="message-item">
-        <div :class="['message-wrapper', message.role]">
-          <div class="message-avatar">
-            <component
-              :is="message.role === 'user' ? User : ChatRound"
-              class="avatar-icon"
-            />
-          </div>
-          <div class="message-content">
-            <div class="message-bubble">
-              <p class="message-text">{{ message.content }}</p>
-            </div>
-            <div class="message-meta">
-              <span class="message-time">{{
-                formatTime(message.timestamp)
-              }}</span>
-            </div>
-          </div>
-        </div>
-        <div
-          v-if="message.intent || message.compliancePassed !== undefined"
-          class="message-tags"
-        >
-          <el-tag type="info" size="small">
-            <span class="tag-icon">
-              <Aim class="icon" />
-            </span>
-            意图识别: {{ message.intent }}
-          </el-tag>
-          <el-tag
-            :type="message.compliancePassed ? 'success' : 'danger'"
-            size="small"
+    <div class="chat-messages">
+      <VirtualScroll ref="virtualScrollRef" :items="messages" item-key="id">
+        <template #default="{ item }">
+          <div
+            :key="item.id"
+            class="message-item"
+            :ref="(el) => setItemRef(el as HTMLElement, item.id)"
           >
-            <span class="tag-icon">
-              <Lock class="icon" />
-            </span>
-            合规检查: {{ message.compliancePassed ? "通过" : "未通过" }}
-          </el-tag>
-        </div>
-      </div>
+            <div :class="['message-wrapper', item.role]">
+              <div class="message-avatar">
+                <component
+                  :is="item.role === 'user' ? User : ChatRound"
+                  class="avatar-icon"
+                />
+              </div>
+              <div class="message-content">
+                <div class="message-bubble">
+                  <p class="message-text">{{ item.content }}</p>
+                </div>
+                <div class="message-meta">
+                  <span class="message-time">{{
+                    formatTime(item.timestamp)
+                  }}</span>
+                </div>
+              </div>
+            </div>
+            <div
+              v-if="
+                item.role === 'assistant' &&
+                (item.intent || item.compliancePassed !== undefined)
+              "
+              class="message-tags"
+            >
+              <el-tag type="info" size="small">
+                <span class="tag-icon"><Aim class="icon" /></span>
+                意图识别: {{ item.intent }}
+              </el-tag>
+              <el-tag
+                :type="item.compliancePassed ? 'success' : 'danger'"
+                size="small"
+              >
+                <span class="tag-icon"><Lock class="icon" /></span>
+                合规检查: {{ item.compliancePassed ? "通过" : "未通过" }}
+              </el-tag>
+              <el-tag
+                v-if="item.complianceViolations?.length"
+                type="warning"
+                size="small"
+              >
+                {{ item.complianceViolations.join("; ") }}
+              </el-tag>
+            </div>
+          </div>
+        </template>
+      </VirtualScroll>
       <div v-if="isLoading" class="loading-indicator">
         <el-skeleton :rows="3" animated />
       </div>
@@ -100,45 +114,40 @@ import {
   Lock,
   ArrowRight,
 } from "@element-plus/icons-vue";
-import { chatApi } from "@/api";
+import { chatApi, historyApi } from "@/api";
 import type { Message, ChatRequest, ChatResponse } from "@/types";
+import VirtualScroll from "@/components/VirtualScroll.vue";
 
 const emit = defineEmits<{
   (e: "session-change", sessionId: string): void;
 }>();
 
-const messagesContainer = ref<HTMLElement | null>(null);
+const virtualScrollRef = ref<InstanceType<typeof VirtualScroll> | null>(null);
 const sessionId = ref<string>(localStorage.getItem("sessionId") || "");
 const inputMessage = ref("");
 const isLoading = ref(false);
 const isServiceRunning = ref(true);
 
-const messages = ref<Message[]>([
-  {
-    id: "1",
-    content: "你们的理财产品年化收益率是多少？",
-    role: "user",
-    timestamp: "2024-01-15 15:30:21",
-  },
-  {
-    id: "2",
-    content:
-      "我们的理财产品A年化收益率为3.5%-5.2%，投资期限为6个月至3年，最低投资金额10000元。\n\n注意：理财非存款，产品有风险，投资须谨慎。",
-    role: "assistant",
-    timestamp: "2024-01-15 15:30:23",
-    intent: "产品咨询",
-    compliancePassed: true,
-  },
-]);
+const messages = ref<Message[]>([]);
+const itemRefs = ref<Map<string, HTMLElement>>(new Map());
 
-const formatTime = (timestamp: string) => {
-  return timestamp;
-};
+const formatTime = (timestamp: string) => timestamp;
 
 const scrollToBottom = async () => {
   await nextTick();
-  if (messagesContainer.value) {
-    messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight;
+  if (virtualScrollRef.value) {
+    virtualScrollRef.value.scrollToBottom();
+  }
+};
+
+const setItemRef = (el: HTMLElement | null, id: string) => {
+  if (el) {
+    itemRefs.value.set(id, el);
+    nextTick(() => {
+      if (virtualScrollRef.value) {
+        virtualScrollRef.value.measureItemHeight(id, el.offsetHeight);
+      }
+    });
   }
 };
 
@@ -147,14 +156,41 @@ const generateId = () => {
 };
 
 const getCurrentTime = () => {
-  const now = new Date();
-  return now.toLocaleString("zh-CN", {
+  return new Date().toLocaleString("zh-CN", {
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
+  });
+};
+
+const typeWriter = async (
+  message: Message,
+  text: string,
+  speed: number = 30,
+) => {
+  message.content = "";
+  let index = 0;
+  return new Promise<void>((resolve) => {
+    const interval = setInterval(() => {
+      if (index < text.length) {
+        message.content += text[index++];
+        nextTick(() => {
+          const el = itemRefs.value.get(message.id);
+          if (el && virtualScrollRef.value) {
+            virtualScrollRef.value.measureItemHeight(
+              message.id,
+              el.offsetHeight,
+            );
+          }
+        });
+      } else {
+        clearInterval(interval);
+        resolve();
+      }
+    }, speed);
   });
 };
 
@@ -189,25 +225,54 @@ const handleSend = async () => {
 
     const assistantMessage: Message = {
       id: generateId(),
-      content: response.response,
+      content: "",
       role: "assistant",
       timestamp: getCurrentTime(),
       intent: response.intent,
       compliancePassed: response.compliance_passed,
+      complianceRiskLevel: response.compliance_risk_level,
+      complianceViolations: response.compliance_violations,
     };
     messages.value.push(assistantMessage);
-  } catch (error) {
+    await typeWriter(assistantMessage, response.response);
+  } catch {
     ElMessage.error("发送失败，请稍后重试");
-    const errorMessage: Message = {
+    messages.value.push({
       id: generateId(),
       content: "系统处理异常，请稍后重试",
       role: "assistant",
       timestamp: getCurrentTime(),
-    };
-    messages.value.push(errorMessage);
+    });
   } finally {
     isLoading.value = false;
     scrollToBottom();
+  }
+};
+
+const loadHistory = async () => {
+  if (!sessionId.value) return;
+  try {
+    const data = await historyApi.getHistory(sessionId.value);
+    const result = data as any;
+    messages.value = result.messages.map((msg: any) => ({
+      id: msg.id,
+      content: msg.content,
+      role: msg.role,
+      timestamp: msg.timestamp,
+      intent: msg.intent,
+      compliancePassed: msg.compliance_passed,
+    }));
+    nextTick(() => {
+      messages.value.forEach((msg) => {
+        const el = itemRefs.value.get(msg.id);
+        if (el && virtualScrollRef.value) {
+          virtualScrollRef.value.measureItemHeight(msg.id, el.offsetHeight);
+        }
+      });
+    });
+    scrollToBottom();
+  } catch {
+    messages.value = [];
   }
 };
 
@@ -215,6 +280,7 @@ const handleNewSession = () => {
   sessionId.value = "";
   localStorage.removeItem("sessionId");
   messages.value = [];
+  itemRefs.value.clear();
   emit("session-change", "");
   ElMessage.success("已创建新会话");
 };
@@ -225,7 +291,7 @@ const handleHealthCheck = () => {
 };
 
 onMounted(() => {
-  scrollToBottom();
+  loadHistory();
 });
 </script>
 
@@ -246,6 +312,7 @@ onMounted(() => {
   align-items: center;
   padding: 20px 24px;
   border-bottom: 1px solid #ebe7e1;
+  flex-shrink: 0;
 }
 
 .header-left {
@@ -281,10 +348,9 @@ onMounted(() => {
 .chat-messages {
   flex: 1;
   padding: 24px;
-  overflow-y: auto;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
-  gap: 20px;
 }
 
 .message-item {
@@ -381,6 +447,7 @@ onMounted(() => {
   display: flex;
   gap: 8px;
   padding-left: 52px;
+  flex-wrap: wrap;
 }
 
 .message-wrapper.user .message-tags {
@@ -419,6 +486,7 @@ onMounted(() => {
 .chat-input-wrapper {
   padding: 20px 24px;
   border-top: 1px solid #ebe7e1;
+  flex-shrink: 0;
 }
 
 .chat-input {

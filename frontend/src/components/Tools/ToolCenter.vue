@@ -31,42 +31,46 @@
 </template>
 
 <script setup lang="ts">
-import { ref, markRaw } from "vue";
+import { ref, markRaw, onMounted } from "vue";
 import { DataBoard, User, Files, DataAnalysis } from "@element-plus/icons-vue";
+import { toolApi } from "@/api";
 
 interface ToolWithIcon {
+  id: number;
   name: string;
   description: string;
   available: boolean;
   icon: typeof DataBoard;
 }
 
-const tools = ref<ToolWithIcon[]>([
-  {
-    name: "产品查询",
-    description: "查询产品信息、收益率等",
-    available: true,
-    icon: markRaw(DataBoard),
-  },
-  {
-    name: "账户查询",
-    description: "查询账户信息、余额等",
-    available: true,
-    icon: markRaw(User),
-  },
-  {
-    name: "政策解读",
-    description: "解读相关政策和规则",
-    available: true,
-    icon: markRaw(Files),
-  },
-  {
-    name: "计算工具",
-    description: "理财计算、收益计算等",
-    available: true,
-    icon: markRaw(DataAnalysis),
-  },
-]);
+const tools = ref<ToolWithIcon[]>([]);
+
+const iconMap: Record<string, typeof DataBoard> = {
+  DataBoard,
+  User,
+  Files,
+  DataAnalysis,
+};
+
+const loadTools = async () => {
+  try {
+    const data = await toolApi.listTools();
+    const list = data as any;
+    tools.value = list.tools.map((tool: any) => ({
+      id: tool.id,
+      name: tool.name,
+      description: tool.description,
+      available: tool.available,
+      icon: markRaw(iconMap[tool.icon] || DataBoard),
+    }));
+  } catch {
+    tools.value = [];
+  }
+};
+
+onMounted(() => {
+  loadTools();
+});
 </script>
 
 <style scoped>
