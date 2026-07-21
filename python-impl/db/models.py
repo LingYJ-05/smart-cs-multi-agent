@@ -44,6 +44,7 @@ class Tool(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, unique=True, nullable=False)
+    tool_code = Column(String, unique=True, nullable=False)
     description = Column(String)
     icon = Column(String)
     available = Column(Boolean, default=True)
@@ -66,6 +67,44 @@ class ToolCallLog(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     tool_name = Column(String, nullable=False)
+    session_id = Column(String, index=True)
+    user_id = Column(String, index=True)
+    input_params = Column(Text)
+    output_result = Column(Text)
+    error_message = Column(Text)
     success = Column(Boolean)
     duration_ms = Column(Float)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class Ticket(Base):
+    __tablename__ = "tickets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ticket_id = Column(String, unique=True, index=True, nullable=False)
+    type = Column(String, nullable=False)
+    title = Column(String, nullable=False)
+    description = Column(Text)
+    priority = Column(String, default="medium")
+    status = Column(String, default="created")
+    user_id = Column(String, index=True)
+    username = Column(String)
+    assignee = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class UserProfile(Base):
+    __tablename__ = "user_profiles"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String, unique=True, index=True, nullable=False)
+    username = Column(String)
+    real_name = Column(String)
+    phone = Column(String)
+    email = Column(String)
+    address = Column(String)
+    account_level = Column(String, default="normal")
+    total_spent = Column(Float, default=0.0)
+    registered_at = Column(DateTime, default=datetime.utcnow)
+    last_login_at = Column(DateTime)

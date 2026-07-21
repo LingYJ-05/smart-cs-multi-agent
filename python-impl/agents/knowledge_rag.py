@@ -6,11 +6,14 @@
 
 from __future__ import annotations
 
+import json
+from datetime import datetime
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
+from db.models import ToolCallLog
 from memory.long_term import LongTermMemory
 from tracing.otel_config import trace_agent_call
 
@@ -124,6 +127,10 @@ class KnowledgeRAGAgent:
         4. 生成回答
         """
         messages = state.get("messages", [])
+        db_session = state.get("db_session")
+        user_id = state.get("user_id", "anonymous")
+        session_id = state.get("session_id", "")
+
         if not messages:
             return state
 
@@ -136,6 +143,20 @@ class KnowledgeRAGAgent:
         reranked_docs = await self.rerank_documents(rewritten_query, raw_docs, top_k=3)
 
         answer = await self.generate_answer(original_query, reranked_docs)
+
+        if db_session:
+            log_entry = ToolCallLog(
+                tool_name="knowledge_rag",
+                session_id=session_id,
+                user_id=user_id,
+                input_params=json.dumps({"query": original_query, "rewritten_query": rewritten_query}),
+                output_result=json.dumps({"answer": answer[:500], "docs_found": len(reranked_docs)}),
+                success=True,
+                duration_ms=0,
+                created_at=datetime.now(),
+            )
+            db_session.add(log_entry)
+            db_session.commit()
 
         return {
             **state,

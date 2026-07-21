@@ -45,11 +45,18 @@ class ShortTermMemory:
             if aioredis is None:
                 return None
             try:
-                self._redis = aioredis.from_url(self._redis_url, decode_responses=True)
+                self._redis = aioredis.from_url(self._redis_url, decode_responses=True, socket_timeout=2)
                 await self._redis.ping()
+                return self._redis
             except Exception:
                 self._redis = None
-        return self._redis
+                return None
+        try:
+            await self._redis.ping()
+            return self._redis
+        except Exception:
+            self._redis = None
+            return None
 
     def _session_key(self, session_id: str) -> str:
         return f"smartcs:short_term:{session_id}"

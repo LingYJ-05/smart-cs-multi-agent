@@ -14,6 +14,7 @@ from typing import Any
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
+from db.models import Ticket
 from tracing.otel_config import trace_agent_call
 
 
@@ -66,48 +67,124 @@ TICKET_SYSTEM_PROMPT = """你是一个专业的工单处理Agent，负责处理�
 """
 
 
-class TicketStore:
-    """内存工单存储（生产环境应替换为数据库）"""
+class DatabaseTicketStore:
+    """基于SQLite数据库的工单存储"""
 
-    def __init__(self):
-        self._tickets: dict[str, dict] = {}
+    def __init__(self, db_session):
+        self.db = db_session
 
-    def create(self, ticket_type: str, priority: str, summary: str, details: str, user_id: str) -> dict:
+    def create(self, ticket_type: str, priority: str, summary: str, details: str, user_id: str, username: str = "") -> dict:
         ticket_id = f"TK-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}"
-        ticket = {
-            "ticket_id": ticket_id,
-            "type": ticket_type,
-            "priority": priority,
-            "status": TicketStatus.CREATED.value,
-            "summary": summary,
-            "details": details,
-            "user_id": user_id,
-            "created_at": datetime.now().isoformat(),
-            "updated_at": datetime.now().isoformat(),
+        
+        db_ticket = Ticket(
+            ticket_id=ticket_id,
+            type=ticket_type,
+            title=summary,
+            description=details,
+            priority=priority,
+            status=TicketStatus.CREATED.value,
+            user_id=user_id,
+            username=username,
+        )
+        
+        self.db.add(db_ticket)
+        self.db.commit()
+        self.db.refresh(db_ticket)
+        
+        return {
+            "ticket_id": db_ticket.ticket_id,
+            "type": db_ticket.type,
+            "priority": db_ticket.priority,
+            "status": db_ticket.status,
+            "summary": db_ticket.title,
+            "details": db_ticket.description,
+            "user_id": db_ticket.user_id,
+            "username": db_ticket.username,
+            "created_at": db_ticket.created_at.isoformat() if db_ticket.created_at else "",
+            "updated_at": db_ticket.updated_at.isoformat() if db_ticket.updated_at else "",
         }
-        self._tickets[ticket_id] = ticket
-        return ticket
 
     def query(self, ticket_id: str) -> dict | None:
-        return self._tickets.get(ticket_id)
+        db_ticket = self.db.query(Ticket).filter(Ticket.ticket_id == ticket_id).first()
+        if not db_ticket:
+            return None
+        
+        return {
+            "ticket_id": db_ticket.ticket_id,
+            "type": db_ticket.type,
+            "priority": db_ticket.priority,
+            "status": db_ticket.status,
+            "summary": db_ticket.title,
+            "details": db_ticket.description,
+            "user_id": db_ticket.user_id,
+            "username": db_ticket.username,
+            "assignee": db_ticket.assignee,
+            "created_at": db_ticket.created_at.isoformat() if db_ticket.created_at else "",
+            "updated_at": db_ticket.updated_at.isoformat() if db_ticket.updated_at else "",
+        }
 
     def query_by_user(self, user_id: str) -> list[dict]:
-        return [t for t in self._tickets.values() if t["user_id"] == user_id]
+        tickets = self.db.query(Ticket).filter(Ticket.user_id == user_id).order_by(Ticket.created_at.desc()).all()
+        return [
+            {
+                "ticket_id": t.ticket_id,
+                "type": t.type,
+                "priority": t.priority,
+                "status": t.status,
+                "summary": t.title,
+                "details": t.description,
+                "user_id": t.user_id,
+                "created_at": t.created_at.isoformat() if t.created_at else "",
+                "updated_at": t.updated_at.isoformat() if t.updated_at else "",
+            }
+            for t in tickets
+        ]
 
     def update_status(self, ticket_id: str, status: str) -> dict | None:
-        ticket = self._tickets.get(ticket_id)
-        if ticket:
-            ticket["status"] = status
-            ticket["updated_at"] = datetime.now().isoformat()
-        return ticket
+        db_ticket = self.db.query(Ticket).filter(Ticket.ticket_id == ticket_id).first()
+        if db_ticket:
+            db_ticket.status = status
+            self.db.commit()
+            self.db.refresh(db_ticket)
+            return self.query(ticket_id)
+        return None
+
+    def update(self, ticket_id: str, **kwargs) -> dict | None:
+        db_ticket = self.db.query(Ticket).filter(Ticket.ticket_id == ticket_id).first()
+        if db_ticket:
+            for key, value in kwargs.items():
+                if hasattr(db_ticket, key):
+                    setattr(db_ticket, key, value)
+            self.db.commit()
+            self.db.refresh(db_ticket)
+            return self.query(ticket_id)
+        return None
+
+    def list_all(self, limit: int = 50) -> list[dict]:
+        tickets = self.db.query(Ticket).order_by(Ticket.created_at.desc()).limit(limit).all()
+        return [
+            {
+                "ticket_id": t.ticket_id,
+                "type": t.type,
+                "priority": t.priority,
+                "status": t.status,
+                "summary": t.title,
+                "user_id": t.user_id,
+                "username": t.username,
+                "assignee": t.assignee,
+                "created_at": t.created_at.isoformat() if t.created_at else "",
+                "updated_at": t.updated_at.isoformat() if t.updated_at else "",
+            }
+            for t in tickets
+        ]
 
 
 class TicketHandlerAgent:
     """工单处理Agent"""
 
-    def __init__(self, llm: ChatOpenAI, ticket_store: TicketStore | None = None):
+    def __init__(self, llm: ChatOpenAI):
         self.llm = llm
-        self.ticket_store = ticket_store or TicketStore()
+        self.ticket_store = None
 
     @trace_agent_call("ticket_analyze")
     async def analyze_request(self, user_message: str) -> dict:
@@ -182,24 +259,100 @@ class TicketHandlerAgent:
             f"🔄 更新时间: {ticket['updated_at']}"
         )
 
+    @trace_agent_call("ticket_update")
+    async def update_ticket(self, ticket_info: dict) -> str:
+        """更新工单状态"""
+        ticket_id = ticket_info.get("ticket_id")
+        ticket = self.ticket_store.query(ticket_id)
+        if not ticket:
+            return f"未找到工单号 {ticket_id}，请确认工单号是否正确。"
+
+        updates = {}
+        if "status" in ticket_info:
+            updates["status"] = ticket_info["status"]
+        if "priority" in ticket_info:
+            updates["priority"] = ticket_info["priority"]
+        if "assignee" in ticket_info:
+            updates["assignee"] = ticket_info["assignee"]
+
+        if updates:
+            updated_ticket = self.ticket_store.update(ticket_id, **updates)
+        else:
+            updated_ticket = ticket
+
+        status_label = {
+            "created": "已创建",
+            "processing": "处理中",
+            "pending_review": "待审核",
+            "resolved": "已解决",
+            "closed": "已关闭",
+            "escalated": "已升级",
+        }.get(updated_ticket["status"], updated_ticket["status"])
+
+        priority_label = {
+            "low": "普通", "medium": "中等", "high": "高", "urgent": "紧急"
+        }.get(updated_ticket["priority"], "中等")
+
+        return (
+            f"工单已更新成功！\n\n"
+            f"📋 工单号: {updated_ticket['ticket_id']}\n"
+            f"📊 状态: {status_label}\n"
+            f"⚡ 优先级: {priority_label}\n"
+            f"👤 处理人: {updated_ticket.get('assignee', '未分配')}\n"
+            f"🔄 更新时间: {updated_ticket['updated_at']}"
+        )
+
     @trace_agent_call("ticket_handler_process")
     async def process(self, state: dict[str, Any]) -> dict[str, Any]:
         """作为Graph节点处理状态"""
         messages = state.get("messages", [])
         user_id = state.get("user_id", "anonymous")
+        db_session = state.get("db_session")
+        session_id = state.get("session_id", "")
 
         if not messages:
             return state
+
+        if not db_session:
+            return {
+                **state,
+                "sub_results": {
+                    **state.get("sub_results", {}),
+                    "ticket_handler": "抱歉，工单系统暂时不可用，请稍后再试。",
+                },
+            }
+
+        self.ticket_store = DatabaseTicketStore(db_session)
 
         last_message = messages[-1].content
         ticket_info = await self.analyze_request(last_message)
 
         action = ticket_info.get("action", "create")
+        tool_name = f"ticket_{action}"
+        
+        import json
+        from db.models import ToolCallLog
+        from datetime import datetime
 
         if action == "query" and "ticket_id" in ticket_info:
             result = await self.query_ticket(ticket_info["ticket_id"])
+        elif action == "update" and "ticket_id" in ticket_info:
+            result = await self.update_ticket(ticket_info)
         else:
             result = await self.create_ticket(ticket_info, user_id)
+
+        log_entry = ToolCallLog(
+            tool_name=tool_name,
+            session_id=session_id,
+            user_id=user_id,
+            input_params=json.dumps(ticket_info),
+            output_result=json.dumps({"result": result[:500]}),
+            success=True,
+            duration_ms=0,
+            created_at=datetime.now(),
+        )
+        db_session.add(log_entry)
+        db_session.commit()
 
         return {
             **state,

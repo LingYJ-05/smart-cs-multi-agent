@@ -8,6 +8,10 @@ import type {
   LoginResponse,
   RegisterRequest,
   ApiResponse,
+  Ticket,
+  TicketCreateRequest,
+  TicketUpdateRequest,
+  ToolCallLog,
 } from "@/types";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
@@ -109,16 +113,20 @@ export const metricsApi = {
   getMetrics: async () => {
     return api.get("/api/metrics");
   },
+  getToolDistribution: async () => {
+    return api.get("/api/tool-call-logs?limit=100");
+  },
 };
 
 export const historyApi = {
   getHistory: async (sessionId: string) => {
     return api.get(`/api/history/${sessionId}`);
   },
-  getChatHistory: async (params?: { user_id?: string; limit?: number }) => {
+  getChatHistory: async (params?: { user_id?: string; limit?: number; offset?: number }) => {
     const query = new URLSearchParams();
     if (params?.user_id) query.set("user_id", params.user_id);
     if (params?.limit) query.set("limit", params.limit.toString());
+    if (params?.offset) query.set("offset", params.offset.toString());
     return api.get(`/api/chat-history?${query.toString()}`);
   },
 };
@@ -134,6 +142,65 @@ export const sessionApi = {
   },
   deleteSession: async (session_id: string) => {
     return api.delete(`/api/chat-sessions/${session_id}`);
+  },
+};
+
+export const toolCallLogApi = {
+  getLogs: async (params?: {
+    tool_name?: string;
+    session_id?: string;
+    success?: boolean;
+    limit?: number;
+  }): Promise<ToolCallLog[]> => {
+    const query = new URLSearchParams();
+    if (params) {
+      if (params.tool_name) query.append("tool_name", params.tool_name);
+      if (params.session_id) query.append("session_id", params.session_id);
+      if (params.success !== undefined)
+        query.append("success", String(params.success));
+      if (params.limit) query.append("limit", String(params.limit));
+    }
+    return api.get(`/api/tool-call-logs?${query.toString()}`);
+  },
+  createLog: async (data: {
+    tool_name: string;
+    session_id?: string;
+    user_id?: string;
+    input_params?: string;
+    output_result?: string;
+    error_message?: string;
+    success: boolean;
+    duration_ms?: number;
+  }) => {
+    return api.post("/api/tool-call-logs", data);
+  },
+};
+
+export const ticketApi = {
+  listTickets: async (params?: {
+    user_id?: string;
+    status?: string;
+    limit?: number;
+  }) => {
+    const query = new URLSearchParams();
+    if (params) {
+      if (params.user_id) query.append("user_id", params.user_id);
+      if (params.status) query.append("status", params.status);
+      if (params.limit) query.append("limit", String(params.limit));
+    }
+    return api.get(`/api/tickets?${query.toString()}`) as Promise<Ticket[]>;
+  },
+  getTicket: async (ticket_id: string) => {
+    return api.get(`/api/tickets/${ticket_id}`) as Promise<Ticket>;
+  },
+  createTicket: async (data: TicketCreateRequest) => {
+    return api.post("/api/tickets", data) as Promise<Ticket>;
+  },
+  updateTicket: async (ticket_id: string, data: TicketUpdateRequest) => {
+    return api.put(`/api/tickets/${ticket_id}`, data) as Promise<Ticket>;
+  },
+  deleteTicket: async (ticket_id: string) => {
+    return api.delete(`/api/tickets/${ticket_id}`);
   },
 };
 

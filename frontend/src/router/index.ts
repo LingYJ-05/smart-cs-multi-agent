@@ -2,6 +2,10 @@ import { createRouter, createWebHistory } from 'vue-router'
 import type { RouteRecordRaw } from 'vue-router'
 import LoginPage from '@/components/Auth/LoginPage.vue'
 import Dashboard from '@/components/Dashboard/Dashboard.vue'
+import ChatSessionPage from '@/components/Chat/ChatSessionPage.vue'
+import HistoryPage from '@/components/History/HistoryPage.vue'
+import ToolsCenterPage from '@/components/Tools/ToolsCenterPage.vue'
+import SystemMonitorPage from '@/components/Metrics/SystemMonitorPage.vue'
 
 const routes: RouteRecordRaw[] = [
   {
@@ -13,6 +17,29 @@ const routes: RouteRecordRaw[] = [
     path: '/dashboard',
     name: 'Dashboard',
     component: Dashboard,
+    redirect: '/chat',
+    children: [
+      {
+        path: '/chat',
+        name: 'Chat',
+        component: ChatSessionPage,
+      },
+      {
+        path: '/history',
+        name: 'History',
+        component: HistoryPage,
+      },
+      {
+        path: '/tools',
+        name: 'Tools',
+        component: ToolsCenterPage,
+      },
+      {
+        path: '/monitor',
+        name: 'Monitor',
+        component: SystemMonitorPage,
+      },
+    ],
   },
 ]
 

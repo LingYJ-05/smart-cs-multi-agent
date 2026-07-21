@@ -1,32 +1,9 @@
 <template>
   <div class="chat-container">
-    <div class="chat-header">
-      <div class="header-left">
-        <h2 class="header-title">会话聊天</h2>
-        <span class="session-id">当前会话: {{ sessionId }}</span>
-      </div>
-      <div class="header-right">
-        <el-button type="primary" plain size="small" @click="handleNewSession">
-          <Plus class="btn-icon" />
-          新建会话
-        </el-button>
-        <el-tag :type="isServiceRunning ? 'success' : 'danger'" size="small">
-          {{ isServiceRunning ? "服务运行中" : "服务异常" }}
-        </el-tag>
-        <el-button size="small" @click="handleHealthCheck">
-          <CircleCheck class="btn-icon" />
-          系统健康
-        </el-button>
-      </div>
-    </div>
     <div class="chat-messages">
       <VirtualScroll ref="virtualScrollRef" :items="messages" item-key="id">
         <template #default="{ item }">
-          <div
-            :key="item.id"
-            class="message-item"
-            :ref="(el) => setItemRef(el as HTMLElement, item.id)"
-          >
+          <div :key="item.id" class="message-item">
             <div :class="['message-wrapper', item.role]">
               <div class="message-avatar">
                 <component
@@ -108,8 +85,6 @@ import { ElMessage } from "element-plus";
 import {
   ChatRound,
   User,
-  Plus,
-  CircleCheck,
   Aim,
   Lock,
   ArrowRight,
@@ -126,10 +101,8 @@ const virtualScrollRef = ref<InstanceType<typeof VirtualScroll> | null>(null);
 const sessionId = ref<string>(localStorage.getItem("sessionId") || "");
 const inputMessage = ref("");
 const isLoading = ref(false);
-const isServiceRunning = ref(true);
 
 const messages = ref<Message[]>([]);
-const itemRefs = ref<Map<string, HTMLElement>>(new Map());
 
 const formatTime = (timestamp: string) => timestamp;
 
@@ -137,17 +110,6 @@ const scrollToBottom = async () => {
   await nextTick();
   if (virtualScrollRef.value) {
     virtualScrollRef.value.scrollToBottom();
-  }
-};
-
-const setItemRef = (el: HTMLElement | null, id: string) => {
-  if (el) {
-    itemRefs.value.set(id, el);
-    nextTick(() => {
-      if (virtualScrollRef.value) {
-        virtualScrollRef.value.measureItemHeight(id, el.offsetHeight);
-      }
-    });
   }
 };
 
@@ -167,24 +129,22 @@ const getCurrentTime = () => {
 };
 
 const typeWriter = async (
-  message: Message,
+  messageId: string,
   text: string,
   speed: number = 30,
 ) => {
-  message.content = "";
+  const messageIndex = messages.value.findIndex((m) => m.id === messageId);
+  if (messageIndex === -1) return;
+
+  messages.value[messageIndex].content = "";
   let index = 0;
   return new Promise<void>((resolve) => {
     const interval = setInterval(() => {
       if (index < text.length) {
-        message.content += text[index++];
+        messages.value[messageIndex].content += text[index];
+        index++;
         nextTick(() => {
-          const el = itemRefs.value.get(message.id);
-          if (el && virtualScrollRef.value) {
-            virtualScrollRef.value.measureItemHeight(
-              message.id,
-              el.offsetHeight,
-            );
-          }
+          scrollToBottom();
         });
       } else {
         clearInterval(interval);
@@ -234,7 +194,7 @@ const handleSend = async () => {
       complianceViolations: response.compliance_violations,
     };
     messages.value.push(assistantMessage);
-    await typeWriter(assistantMessage, response.response);
+    await typeWriter(assistantMessage.id, response.response);
   } catch {
     ElMessage.error("发送失败，请稍后重试");
     messages.value.push({
@@ -254,40 +214,29 @@ const loadHistory = async () => {
   try {
     const data = await historyApi.getHistory(sessionId.value);
     const result = data as any;
-    messages.value = result.messages.map((msg: any) => ({
-      id: msg.id,
-      content: msg.content,
-      role: msg.role,
-      timestamp: msg.timestamp,
-      intent: msg.intent,
-      compliancePassed: msg.compliance_passed,
-    }));
-    nextTick(() => {
-      messages.value.forEach((msg) => {
-        const el = itemRefs.value.get(msg.id);
-        if (el && virtualScrollRef.value) {
-          virtualScrollRef.value.measureItemHeight(msg.id, el.offsetHeight);
-        }
-      });
-    });
-    scrollToBottom();
-  } catch {
+    const historyMessages: Message[] = [];
+
+    if (result.messages && Array.isArray(result.messages)) {
+      historyMessages.push(
+        ...result.messages.map((msg: any) => ({
+          id: msg.id || generateId(),
+          content: msg.content || "",
+          role: msg.role || "assistant",
+          timestamp: msg.timestamp || getCurrentTime(),
+          intent: msg.intent,
+          compliancePassed: msg.compliance_passed,
+          complianceRiskLevel: msg.compliance_risk_level,
+          complianceViolations: msg.compliance_violations || [],
+        })),
+      );
+    }
+
+    messages.value = historyMessages;
+    await scrollToBottom();
+  } catch (error) {
+    console.error("加载历史消息失败:", error);
     messages.value = [];
   }
-};
-
-const handleNewSession = () => {
-  sessionId.value = "";
-  localStorage.removeItem("sessionId");
-  messages.value = [];
-  itemRefs.value.clear();
-  emit("session-change", "");
-  ElMessage.success("已创建新会话");
-};
-
-const handleHealthCheck = () => {
-  isServiceRunning.value = !isServiceRunning.value;
-  ElMessage.info(`系统健康状态: ${isServiceRunning.value ? "正常" : "异常"}`);
 };
 
 onMounted(() => {

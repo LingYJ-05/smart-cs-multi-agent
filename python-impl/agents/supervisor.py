@@ -20,6 +20,7 @@ from agents.intent_router import IntentRouterAgent
 from agents.knowledge_rag import KnowledgeRAGAgent
 from agents.ticket_handler import TicketHandlerAgent
 from agents.compliance_checker import ComplianceCheckerAgent
+from agents.tool_caller import ToolCallerAgent
 from memory.working_memory import WorkingMemory
 from memory.short_term import ShortTermMemory
 from memory.long_term import LongTermMemory
@@ -39,6 +40,7 @@ class AgentState(TypedDict):
     final_response: str
     current_agent: str
     retry_count: int
+    db_session: Any | None
 
 
 # ─── Supervisor节点 ───
@@ -80,10 +82,11 @@ class SupervisorNode:
             *messages,
             HumanMessage(content=(
                 "请分析用户的最新消息，返回应该路由到的Agent名称。"
-                "只返回以下之一: knowledge_rag, ticket_handler"
+                "只返回以下之一: knowledge_rag, ticket_handler, tool_caller"
                 "\n\n规则:"
-                "\n- 日常问候、咨询、闲聊 → knowledge_rag"
+                "\n- 日常问候、咨询、闲聊、知识问答 → knowledge_rag"
                 "\n- 退款、投诉、工单相关 → ticket_handler"
+                "\n- 查询产品、查询账户、政策解读、计算收益等需要调用工具的场景 → tool_caller"
                 "\n- compliance_checker不是独立路由目标，所有回复都会自动经过合规审查"
             )),
         ]
@@ -91,7 +94,7 @@ class SupervisorNode:
         response = await self.llm.ainvoke(routing_prompt)
         intent = response.content.strip().lower()
 
-        valid_intents = {"knowledge_rag", "ticket_handler"}
+        valid_intents = {"knowledge_rag", "ticket_handler", "tool_caller"}
         if intent not in valid_intents:
             intent = "knowledge_rag"
 
@@ -144,6 +147,7 @@ def route_to_agent(state: AgentState) -> str:
     route_map = {
         "knowledge_rag": "knowledge_rag",
         "ticket_handler": "ticket_handler",
+        "tool_caller": "tool_caller",
     }
     return route_map.get(intent, "knowledge_rag")
 
@@ -160,8 +164,8 @@ def create_supervisor_graph(
     working_memory: WorkingMemory | None = None,
     short_term_memory: ShortTermMemory | None = None,
     long_term_memory: LongTermMemory | None = None,
-    enable_checkpointing: bool = True,
-) -> StateGraph:
+    enable_checkpointing: bool = False,
+) -> Any:
     """
     构建Supervisor编排的多Agent StateGraph。
 
@@ -204,6 +208,7 @@ def create_supervisor_graph(
     intent_router = IntentRouterAgent(llm)
     knowledge_agent = KnowledgeRAGAgent(llm, long_term_memory)
     ticket_agent = TicketHandlerAgent(llm)
+    tool_caller_agent = ToolCallerAgent(llm)
     compliance_agent = ComplianceCheckerAgent(llm)
 
     graph = StateGraph(AgentState)
@@ -211,6 +216,7 @@ def create_supervisor_graph(
     graph.add_node("supervisor_route", supervisor.route_decision)
     graph.add_node("knowledge_rag", knowledge_agent.process)
     graph.add_node("ticket_handler", ticket_agent.process)
+    graph.add_node("tool_caller", tool_caller_agent.process)
     graph.add_node("compliance_check", compliance_agent.process)
     graph.add_node("synthesize", supervisor.synthesize_response)
 
@@ -222,12 +228,13 @@ def create_supervisor_graph(
         {
             "knowledge_rag": "knowledge_rag",
             "ticket_handler": "ticket_handler",
-            "compliance_check": "compliance_check",
+            "tool_caller": "tool_caller",
         },
     )
 
     graph.add_edge("knowledge_rag", "compliance_check")
     graph.add_edge("ticket_handler", "compliance_check")
+    graph.add_edge("tool_caller", "compliance_check")
     graph.add_edge("compliance_check", "synthesize")
     graph.add_edge("synthesize", END)
 

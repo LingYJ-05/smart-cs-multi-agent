@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import uuid
+import json
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Any
 
@@ -30,7 +31,8 @@ from memory.long_term import LongTermMemory
 from mcp.mcp_server import MCPToolServer, create_default_tools
 from tracing.otel_config import init_tracer, AgentMetrics
 from db.database import get_db, init_db
-from db.models import User, ChatSession, ChatMessage, Tool, SystemMetric, ToolCallLog
+from db.models import User, ChatSession, ChatMessage, Tool, SystemMetric, ToolCallLog, Ticket
+from datetime import datetime
 
 load_dotenv()
 
@@ -147,14 +149,47 @@ graph = None
 has_api_key = bool(os.getenv("DEEPSEEK_API_KEY") or os.getenv("OPENAI_API_KEY"))
 
 
+async def log_tool_call(result: Any, arguments: dict) -> None:
+    """工具调用回调：记录到数据库"""
+    try:
+        db = next(get_db())
+        log_entry = ToolCallLog(
+            tool_name=result.tool_name,
+            success=result.success,
+            duration_ms=result.duration_ms,
+            input_params=json.dumps(arguments),
+            output_result=json.dumps(result.result) if result.result else None,
+            error_message=result.error,
+        )
+        db.add(log_entry)
+        db.commit()
+        db.close()
+    except Exception as e:
+        print(f"[工具调用日志记录失败] {e}")
+
+
+mcp_server.register_callback(log_tool_call)
+
+
 def init_default_data(db: Session):
     """初始化默认数据"""
+    if db.query(User).count() == 0:
+        import hashlib
+        admin_user = User(
+            username="admin",
+            password_hash=hashlib.sha256("admin123".encode()).hexdigest(),
+            role="admin",
+        )
+        db.add(admin_user)
+        db.commit()
+        print("✅ 初始化默认用户完成")
+
     if db.query(Tool).count() == 0:
         tools = [
-            Tool(name="产品查询", description="查询产品信息、收益率等", icon="DataBoard", available=True),
-            Tool(name="账户查询", description="查询账户信息、余额等", icon="User", available=True),
-            Tool(name="政策解读", description="解读相关政策和规则", icon="Files", available=True),
-            Tool(name="计算工具", description="理财计算、收益计算等", icon="DataAnalysis", available=True),
+            Tool(name="产品查询", tool_code="product_query", description="查询产品信息、收益率等", icon="DataBoard", available=True),
+            Tool(name="账户查询", tool_code="account_query", description="查询账户信息、余额等", icon="User", available=True),
+            Tool(name="政策解读", tool_code="policy_interpretation", description="解读相关政策和规则", icon="Files", available=True),
+            Tool(name="计算工具", tool_code="finance_calculator", description="理财计算、收益计算等", icon="DataAnalysis", available=True),
         ]
         db.add_all(tools)
         db.commit()
@@ -348,6 +383,7 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
         "final_response": "",
         "current_agent": "",
         "retry_count": 0,
+        "db_session": db,
     }
 
     config = {"configurable": {"thread_id": session_id}}
@@ -476,6 +512,7 @@ async def list_tools(db: Session = Depends(get_db)):
     tools_data = [{
         "id": t.id,
         "name": t.name,
+        "tool_code": t.tool_code,
         "description": t.description,
         "icon": t.icon,
         "available": t.available,
@@ -487,6 +524,7 @@ async def list_tools(db: Session = Depends(get_db)):
 @app.post("/api/tools/call")
 async def call_tool(request: dict, db: Session = Depends(get_db)):
     """MCP工具调用接口"""
+    import json
     result = await mcp_server.call_tool(
         name=request.get("name", ""),
         arguments=request.get("arguments", {}),
@@ -494,6 +532,11 @@ async def call_tool(request: dict, db: Session = Depends(get_db)):
 
     log = ToolCallLog(
         tool_name=request.get("name", ""),
+        session_id=request.get("session_id"),
+        user_id=request.get("user_id"),
+        input_params=json.dumps(request.get("arguments", {})),
+        output_result=json.dumps(result.result) if result.result else None,
+        error_message=result.error,
         success=result.success,
         duration_ms=result.duration_ms,
     )
@@ -588,9 +631,9 @@ async def get_metrics(db: Session = Depends(get_db)):
 
 
 @app.get("/api/chat-history")
-async def get_chat_history(user_id: str | None = None, limit: int = 20, db: Session = Depends(get_db)):
+async def get_chat_history(user_id: str | None = None, limit: int = 10, offset: int = 0, db: Session = Depends(get_db)):
     """获取对话历史记录（Dashboard用）"""
-    subq = db.query(
+    base_query = db.query(
         ChatMessage.session_id,
         ChatMessage.content,
         ChatMessage.created_at,
@@ -599,22 +642,86 @@ async def get_chat_history(user_id: str | None = None, limit: int = 20, db: Sess
     ).join(ChatSession, ChatSession.session_id == ChatMessage.session_id)
     
     if user_id:
-        subq = subq.filter(ChatSession.user_id == user_id)
+        base_query = base_query.filter(ChatSession.user_id == user_id)
     
-    subq = subq.filter(ChatMessage.role == "user").order_by(
+    base_query = base_query.filter(ChatMessage.role == "user")
+    
+    total = base_query.count()
+    
+    history = base_query.order_by(
         ChatMessage.created_at.desc()
-    ).limit(limit).subquery()
-    
-    history = db.query(subq).all()
+    ).offset(offset).limit(limit).all()
     
     history_data = [{
-        "id": h.session_id,
+        "id": f"{h.session_id}_{hash(h.content)}",
+        "session_id": h.session_id,
         "content": h.content,
         "time": h.created_at.strftime("%H:%M") if h.created_at else "",
         "username": h.username,
     } for h in history]
     
-    return success_response(data=history_data, message="获取历史记录成功")
+    return success_response(data={"list": history_data, "total": total}, message="获取历史记录成功")
+
+
+@app.get("/api/tool-call-logs")
+async def get_tool_call_logs(
+    tool_name: str | None = None,
+    session_id: str | None = None,
+    success: bool | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+):
+    """获取工具调用日志"""
+    query = db.query(ToolCallLog).order_by(ToolCallLog.created_at.desc())
+    
+    if tool_name:
+        query = query.filter(ToolCallLog.tool_name == tool_name)
+    if session_id:
+        query = query.filter(ToolCallLog.session_id == session_id)
+    if success is not None:
+        query = query.filter(ToolCallLog.success == success)
+    
+    total = query.count()
+    
+    logs = query.offset(offset).limit(limit).all()
+    
+    logs_data = [{
+        "id": log.id,
+        "tool_name": log.tool_name,
+        "session_id": log.session_id or "",
+        "user_id": log.user_id or "",
+        "input_params": log.input_params or "",
+        "output_result": log.output_result or "",
+        "error_message": log.error_message or "",
+        "success": log.success,
+        "duration_ms": log.duration_ms,
+        "created_at": log.created_at.strftime("%Y-%m-%d %H:%M:%S") if log.created_at else "",
+    } for log in logs]
+    
+    return success_response(data={"data": logs_data, "total": total}, message="获取工具调用日志成功")
+
+
+@app.post("/api/tool-call-logs")
+async def create_tool_call_log(
+    request: dict,
+    db: Session = Depends(get_db),
+):
+    """记录工具调用日志"""
+    log_entry = ToolCallLog(
+        tool_name=request.get("tool_name"),
+        session_id=request.get("session_id"),
+        user_id=request.get("user_id"),
+        input_params=request.get("input_params"),
+        output_result=request.get("output_result"),
+        error_message=request.get("error_message"),
+        success=request.get("success"),
+        duration_ms=request.get("duration_ms"),
+    )
+    db.add(log_entry)
+    db.commit()
+    
+    return success_response(data={"id": log_entry.id}, message="日志记录成功")
 
 
 captcha_store: dict[str, str] = {}
@@ -735,6 +842,149 @@ async def register(request: RegisterRequest, db: Session = Depends(get_db)):
     return success_response(
         data=LoginData(token=access_token, username=new_user.username, role=new_user.role),
         message="注册成功",
+    )
+
+
+@app.get("/api/tickets")
+async def list_tickets(
+    user_id: str | None = None,
+    status: str | None = None,
+    limit: int = 20,
+    db: Session = Depends(get_db),
+):
+    """获取工单列表"""
+    query = db.query(Ticket)
+    if user_id:
+        query = query.filter(Ticket.user_id == user_id)
+    if status:
+        query = query.filter(Ticket.status == status)
+    
+    tickets = query.order_by(Ticket.created_at.desc()).limit(limit).all()
+    
+    return success_response(
+        data=[{
+            "id": t.id,
+            "ticket_id": t.ticket_id,
+            "type": t.type,
+            "title": t.title,
+            "description": t.description,
+            "priority": t.priority,
+            "status": t.status,
+            "user_id": t.user_id,
+            "username": t.username,
+            "assignee": t.assignee,
+            "created_at": t.created_at.isoformat() if t.created_at else None,
+            "updated_at": t.updated_at.isoformat() if t.updated_at else None,
+        } for t in tickets],
+        message="获取成功",
+    )
+
+
+@app.get("/api/tickets/{ticket_id}")
+async def get_ticket(ticket_id: str, db: Session = Depends(get_db)):
+    """获取单个工单详情"""
+    ticket = db.query(Ticket).filter(Ticket.ticket_id == ticket_id).first()
+    if not ticket:
+        raise HTTPException(status_code=404, detail="工单不存在")
+    
+    return success_response(
+        data={
+            "id": ticket.id,
+            "ticket_id": ticket.ticket_id,
+            "type": ticket.type,
+            "title": ticket.title,
+            "description": ticket.description,
+            "priority": ticket.priority,
+            "status": ticket.status,
+            "user_id": ticket.user_id,
+            "username": ticket.username,
+            "assignee": ticket.assignee,
+            "created_at": ticket.created_at.isoformat() if ticket.created_at else None,
+            "updated_at": ticket.updated_at.isoformat() if ticket.updated_at else None,
+        },
+        message="获取成功",
+    )
+
+
+@app.post("/api/tickets")
+async def create_ticket(request: dict, db: Session = Depends(get_db)):
+    """创建工单"""
+    ticket_id = f"TK-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}"
+    
+    new_ticket = Ticket(
+        ticket_id=ticket_id,
+        type=request.get("type", "general"),
+        title=request.get("title", ""),
+        description=request.get("description", ""),
+        priority=request.get("priority", "medium"),
+        status="created",
+        user_id=request.get("user_id", ""),
+        username=request.get("username", ""),
+    )
+    
+    db.add(new_ticket)
+    db.commit()
+    db.refresh(new_ticket)
+    
+    return success_response(
+        data={
+            "ticket_id": new_ticket.ticket_id,
+            "type": new_ticket.type,
+            "title": new_ticket.title,
+            "priority": new_ticket.priority,
+            "status": new_ticket.status,
+            "created_at": new_ticket.created_at.isoformat() if new_ticket.created_at else None,
+        },
+        message="工单创建成功",
+    )
+
+
+@app.put("/api/tickets/{ticket_id}")
+async def update_ticket(ticket_id: str, request: dict, db: Session = Depends(get_db)):
+    """更新工单"""
+    ticket = db.query(Ticket).filter(Ticket.ticket_id == ticket_id).first()
+    if not ticket:
+        raise HTTPException(status_code=404, detail="工单不存在")
+    
+    if "status" in request:
+        ticket.status = request["status"]
+    if "priority" in request:
+        ticket.priority = request["priority"]
+    if "assignee" in request:
+        ticket.assignee = request["assignee"]
+    if "title" in request:
+        ticket.title = request["title"]
+    if "description" in request:
+        ticket.description = request["description"]
+    
+    db.commit()
+    db.refresh(ticket)
+    
+    return success_response(
+        data={
+            "ticket_id": ticket.ticket_id,
+            "status": ticket.status,
+            "priority": ticket.priority,
+            "assignee": ticket.assignee,
+            "updated_at": ticket.updated_at.isoformat() if ticket.updated_at else None,
+        },
+        message="工单更新成功",
+    )
+
+
+@app.delete("/api/tickets/{ticket_id}")
+async def delete_ticket(ticket_id: str, db: Session = Depends(get_db)):
+    """删除工单"""
+    ticket = db.query(Ticket).filter(Ticket.ticket_id == ticket_id).first()
+    if not ticket:
+        raise HTTPException(status_code=404, detail="工单不存在")
+    
+    db.delete(ticket)
+    db.commit()
+    
+    return success_response(
+        data={"ticket_id": ticket_id},
+        message="工单删除成功",
     )
 
 

@@ -20,7 +20,7 @@
     </div>
     <div class="recent-calls">
       <h4 class="recent-title">最近工具调用</h4>
-      <a href="#" class="view-all">查看全部</a>
+      <span class="view-all" @click="showLogsDialog = true">查看全部</span>
       <div class="calls-list">
         <div
           v-for="(call, index) in recentCalls"
@@ -33,11 +33,104 @@
         </div>
       </div>
     </div>
+
+    <el-dialog
+      v-model="showLogsDialog"
+      title="工具调用日志"
+      width="800px"
+      :close-on-click-modal="true"
+    >
+      <div class="logs-filter">
+        <el-input
+          v-model="filterToolName"
+          placeholder="按工具名称搜索"
+          size="small"
+          style="width: 200px"
+        />
+        <el-select
+          v-model="filterSuccess"
+          placeholder="状态筛选"
+          size="small"
+          style="width: 120px; margin-left: 12px"
+        >
+          <el-option label="全部" :value="''" />
+          <el-option label="成功" :value="true" />
+          <el-option label="失败" :value="false" />
+        </el-select>
+        <el-button size="small" type="primary" @click="loadLogs">
+          查询
+        </el-button>
+      </div>
+      <el-table :data="toolLogs" border size="small" class="logs-table">
+        <el-table-column prop="id" label="ID" width="60" />
+        <el-table-column prop="tool_name" label="工具名称" width="120" />
+        <el-table-column
+          prop="session_id"
+          label="会话ID"
+          width="150"
+          show-overflow-tooltip
+        />
+        <el-table-column prop="user_id" label="用户ID" width="100" />
+        <el-table-column prop="success" label="状态" width="80">
+          <template #default="{ row }">
+            <el-tag :type="row.success ? 'success' : 'danger'" size="small">
+              {{ row.success ? "成功" : "失败" }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="duration_ms" label="耗时(ms)" width="100" />
+        <el-table-column prop="created_at" label="时间" width="160" />
+        <el-table-column label="操作" width="80">
+          <template #default="{ row }">
+            <el-button size="small" @click="showLogDetail(row)">详情</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+
+      <el-dialog v-model="showDetailDialog" title="日志详情" width="600px">
+        <el-form :model="currentLog" label-width="80px" size="small">
+          <el-form-item label="工具名称">
+            {{ currentLog.tool_name }}
+          </el-form-item>
+          <el-form-item label="会话ID">
+            {{ currentLog.session_id || "-" }}
+          </el-form-item>
+          <el-form-item label="用户ID">
+            {{ currentLog.user_id || "-" }}
+          </el-form-item>
+          <el-form-item label="输入参数">
+            <pre class="log-content">{{ currentLog.input_params || "-" }}</pre>
+          </el-form-item>
+          <el-form-item label="输出结果">
+            <pre class="log-content">{{ currentLog.output_result || "-" }}</pre>
+          </el-form-item>
+          <el-form-item label="错误信息">
+            <pre class="log-content error">{{
+              currentLog.error_message || "-"
+            }}</pre>
+          </el-form-item>
+          <el-form-item label="状态">
+            <el-tag
+              :type="currentLog.success ? 'success' : 'danger'"
+              size="small"
+            >
+              {{ currentLog.success ? "成功" : "失败" }}
+            </el-tag>
+          </el-form-item>
+          <el-form-item label="耗时">
+            {{ currentLog.duration_ms }} ms
+          </el-form-item>
+          <el-form-item label="时间">
+            {{ currentLog.created_at }}
+          </el-form-item>
+        </el-form>
+      </el-dialog>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, markRaw, onMounted } from "vue";
+import { ref, markRaw, onMounted, reactive } from "vue";
 import {
   ChatRound,
   Setting,
@@ -45,7 +138,8 @@ import {
   Clock,
   Refresh,
 } from "@element-plus/icons-vue";
-import { metricsApi } from "@/api";
+import { metricsApi, toolCallLogApi } from "@/api";
+import type { ToolCallLog } from "@/types";
 
 interface MetricWithIcon {
   label: string;
@@ -55,8 +149,26 @@ interface MetricWithIcon {
 }
 
 const metrics = ref<MetricWithIcon[]>([]);
-
 const recentCalls = ref<{ name: string; time: string; color: string }[]>([]);
+
+const showLogsDialog = ref(false);
+const showDetailDialog = ref(false);
+const filterToolName = ref("");
+const filterSuccess = ref<boolean | "">("");
+const toolLogs = ref<ToolCallLog[]>([]);
+
+const currentLog = reactive<ToolCallLog>({
+  id: 0,
+  tool_name: "",
+  session_id: "",
+  user_id: "",
+  input_params: "",
+  output_result: "",
+  error_message: "",
+  success: true,
+  duration_ms: 0,
+  created_at: "",
+});
 
 const iconMap: Record<string, typeof ChatRound> = {
   daily_sessions: ChatRound,
@@ -91,6 +203,25 @@ const loadMetrics = async () => {
     metrics.value = [];
     recentCalls.value = [];
   }
+};
+
+const loadLogs = async () => {
+  try {
+    const params: any = { limit: 50 };
+    if (filterToolName.value) params.tool_name = filterToolName.value;
+    if (filterSuccess.value !== "") params.success = filterSuccess.value;
+    const data = await toolCallLogApi.getLogs(params);
+    const result = data as any;
+    toolLogs.value = result.data || result || [];
+  } catch (error) {
+    console.error("Failed to load logs:", error);
+    toolLogs.value = [];
+  }
+};
+
+const showLogDetail = (row: ToolCallLog) => {
+  Object.assign(currentLog, row);
+  showDetailDialog.value = true;
 };
 
 const handleRefresh = () => {
@@ -207,7 +338,7 @@ onMounted(() => {
 .view-all {
   font-size: 13px;
   color: #ff5600;
-  text-decoration: none;
+  cursor: pointer;
 }
 
 .view-all:hover {
@@ -243,6 +374,33 @@ onMounted(() => {
 .call-time {
   font-size: 12px;
   color: #9c9fa5;
+}
+
+.logs-filter {
+  display: flex;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.logs-table {
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.log-content {
+  max-height: 150px;
+  overflow-y: auto;
+  padding: 8px;
+  background: #f5f5f5;
+  border-radius: 4px;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.log-content.error {
+  background: #fef2f2;
+  color: #dc2626;
 }
 
 @media (max-width: 768px) {

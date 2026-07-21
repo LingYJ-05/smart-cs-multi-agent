@@ -192,7 +192,7 @@ const handleLogin = async () => {
       "user",
       JSON.stringify({ username: response.username, role: response.role }),
     );
-    router.push("/dashboard");
+    router.push("/chat");
   } catch {
   } finally {
     loading.value = false;
@@ -216,7 +216,7 @@ const handleRegister = async () => {
       "user",
       JSON.stringify({ username: response.username, role: response.role }),
     );
-    router.push("/dashboard");
+    router.push("/chat");
   } catch {
     await refreshCaptcha();
     form.captcha = "";

@@ -9,16 +9,16 @@
       </div>
     </div>
     <nav class="sidebar-nav">
-      <div
+      <router-link
         v-for="item in menuItems"
         :key="item.id"
+        :to="item.path"
         class="nav-item"
-        :class="{ active: activeMenu === item.id }"
-        @click="handleNavClick(item.id)"
+        active-class="active"
       >
         <component :is="item.icon" class="nav-icon" />
         <span class="nav-text">{{ item.label }}</span>
-      </div>
+      </router-link>
     </nav>
     <div class="sidebar-footer">
       <div class="user-profile">
@@ -38,7 +38,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { computed } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import {
@@ -51,18 +51,13 @@ import {
   SwitchButton,
 } from "@element-plus/icons-vue";
 
-const emit = defineEmits<{
-  (e: "menu-change", menuId: string): void;
-}>();
-
 const router = useRouter();
-const activeMenu = ref("chat");
 
 const menuItems = [
-  { id: "chat", label: "会话聊天", icon: ChatLineRound },
-  { id: "history", label: "对话历史", icon: Clock },
-  { id: "tools", label: "工具中心", icon: Setting },
-  { id: "monitor", label: "系统监控", icon: Monitor },
+  { id: "chat", label: "会话聊天", icon: ChatLineRound, path: "/chat" },
+  { id: "history", label: "对话历史", icon: Clock, path: "/history" },
+  { id: "tools", label: "工具中心", icon: Setting, path: "/tools" },
+  { id: "monitor", label: "系统监控", icon: Monitor, path: "/monitor" },
 ];
 
 const userInfo = computed(() => {
@@ -70,14 +65,10 @@ const userInfo = computed(() => {
   return user ? JSON.parse(user) : { username: "admin", role: "管理员" };
 });
 
-const handleNavClick = (menuId: string) => {
-  activeMenu.value = menuId;
-  emit("menu-change", menuId);
-};
-
 const handleLogout = () => {
   localStorage.removeItem("token");
   localStorage.removeItem("user");
+  localStorage.removeItem("sessionId");
   ElMessage.success("已退出登录");
   router.push("/");
 };
@@ -141,6 +132,7 @@ const handleLogout = () => {
   cursor: pointer;
   transition: all 0.2s ease;
   border-left: 3px solid transparent;
+  text-decoration: none;
 }
 
 .nav-item:hover {
@@ -153,16 +145,16 @@ const handleLogout = () => {
 }
 
 .nav-icon {
-  font-size: 12px;
-  width: 12px;
-  height: 12px;
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
   color: rgba(255, 255, 255, 0.6);
   flex-shrink: 0;
 }
 
 .nav-icon svg {
-  width: 12px !important;
-  height: 12px !important;
+  width: 18px !important;
+  height: 18px !important;
 }
 
 .nav-item.active .nav-icon {
