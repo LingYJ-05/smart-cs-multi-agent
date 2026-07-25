@@ -13,7 +13,7 @@ from typing import AsyncGenerator, Any
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 
-from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi import FastAPI, HTTPException, Depends, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.exceptions import RequestValidationError
@@ -174,10 +174,9 @@ mcp_server.register_callback(log_tool_call)
 def init_default_data(db: Session):
     """初始化默认数据"""
     if db.query(User).count() == 0:
-        import hashlib
         admin_user = User(
             username="admin",
-            password_hash=hashlib.sha256("admin123".encode()).hexdigest(),
+            password_hash=pwd_context.hash("admin123"),
             role="admin",
         )
         db.add(admin_user)
@@ -985,6 +984,300 @@ async def delete_ticket(ticket_id: str, db: Session = Depends(get_db)):
     return success_response(
         data={"ticket_id": ticket_id},
         message="工单删除成功",
+    )
+
+
+ALLOWED_EXTENSIONS = {".txt", ".md", ".json", ".csv", ".pdf", ".docx", ".html", ".xml"}
+UPLOAD_DIR = os.getenv("KB_UPLOAD_DIR", "./knowledge_uploads")
+
+
+def _extract_text_from_file(file_path: str) -> str:
+    """从文件中提取文本内容，支持多种格式"""
+    ext = os.path.splitext(file_path)[1].lower()
+
+    try:
+        if ext == ".txt" or ext == ".md" or ext == ".csv" or ext == ".json" or ext == ".xml":
+            with open(file_path, "r", encoding="utf-8") as f:
+                return f.read()
+        elif ext == ".html":
+            try:
+                from bs4 import BeautifulSoup
+                with open(file_path, "r", encoding="utf-8") as f:
+                    soup = BeautifulSoup(f.read(), "html.parser")
+                    return soup.get_text(separator="\n", strip=True)
+            except ImportError:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    return f.read()
+        elif ext == ".pdf":
+            try:
+                import fitz
+                doc = fitz.open(file_path)
+                text = ""
+                for page in doc:
+                    text += page.get_text()
+                doc.close()
+                return text
+            except ImportError:
+                try:
+                    import PyPDF2
+                    with open(file_path, "rb") as f:
+                        reader = PyPDF2.PdfReader(f)
+                        text = ""
+                        for page in reader.pages:
+                            text += page.extract_text() or ""
+                        return text
+                except ImportError:
+                    return ""
+        elif ext == ".docx":
+            try:
+                from docx import Document
+                doc = Document(file_path)
+                return "\n".join([para.text for para in doc.paragraphs])
+            except ImportError:
+                return ""
+        else:
+            with open(file_path, "r", encoding="utf-8") as f:
+                return f.read()
+    except Exception as e:
+        print(f"[文件解析失败] {file_path}: {e}")
+        return ""
+
+
+@app.post("/api/knowledge/upload")
+async def upload_knowledge_file(
+    file: UploadFile = File(...),
+    category: str = "general",
+    db: Session = Depends(get_db),
+):
+    """上传单个知识库文件"""
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"不支持的文件类型: {ext}，支持: {', '.join(ALLOWED_EXTENSIONS)}")
+
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+    file_id = str(uuid.uuid4())
+    safe_filename = f"{file_id}{ext}"
+    file_path = os.path.join(UPLOAD_DIR, safe_filename)
+
+    content = await file.read()
+    with open(file_path, "wb") as f:
+        f.write(content)
+
+    text_content = _extract_text_from_file(file_path)
+    if not text_content.strip():
+        os.remove(file_path)
+        raise HTTPException(status_code=400, detail="文件内容为空或无法解析")
+
+    chunks = LongTermMemory._chunk_text(text_content)
+    chunk_ids = []
+    for i, chunk in enumerate(chunks):
+        doc_id = long_term_memory.add_document(
+            content=chunk,
+            source=file.filename,
+            metadata={
+                "file_id": file_id,
+                "file_name": file.filename,
+                "category": category,
+                "chunk_index": i,
+                "total_chunks": len(chunks),
+            },
+        )
+        chunk_ids.append(doc_id)
+
+    long_term_memory.save()
+
+    return success_response(
+        data={
+            "file_id": file_id,
+            "file_name": file.filename,
+            "file_size": len(content),
+            "chunks_count": len(chunks),
+            "chunk_ids": chunk_ids,
+            "category": category,
+        },
+        message="文件上传成功",
+    )
+
+
+@app.post("/api/knowledge/upload-batch")
+async def upload_knowledge_batch(
+    files: list[UploadFile] = File(...),
+    category: str = "general",
+    db: Session = Depends(get_db),
+):
+    """批量上传知识库文件"""
+    results = []
+    success_count = 0
+    failed_count = 0
+
+    for file in files:
+        ext = os.path.splitext(file.filename)[1].lower()
+        if ext not in ALLOWED_EXTENSIONS:
+            results.append({
+                "file_name": file.filename,
+                "success": False,
+                "error": f"不支持的文件类型: {ext}",
+            })
+            failed_count += 1
+            continue
+
+        try:
+            os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+            file_id = str(uuid.uuid4())
+            safe_filename = f"{file_id}{ext}"
+            file_path = os.path.join(UPLOAD_DIR, safe_filename)
+
+            content = await file.read()
+            with open(file_path, "wb") as f:
+                f.write(content)
+
+            text_content = _extract_text_from_file(file_path)
+            if not text_content.strip():
+                os.remove(file_path)
+                results.append({
+                    "file_name": file.filename,
+                    "success": False,
+                    "error": "文件内容为空或无法解析",
+                })
+                failed_count += 1
+                continue
+
+            chunks = LongTermMemory._chunk_text(text_content)
+            chunk_ids = []
+            for i, chunk in enumerate(chunks):
+                doc_id = long_term_memory.add_document(
+                    content=chunk,
+                    source=file.filename,
+                    metadata={
+                        "file_id": file_id,
+                        "file_name": file.filename,
+                        "category": category,
+                        "chunk_index": i,
+                        "total_chunks": len(chunks),
+                    },
+                )
+                chunk_ids.append(doc_id)
+
+            results.append({
+                "file_name": file.filename,
+                "file_id": file_id,
+                "success": True,
+                "chunks_count": len(chunks),
+            })
+            success_count += 1
+        except Exception as e:
+            results.append({
+                "file_name": file.filename,
+                "success": False,
+                "error": str(e),
+            })
+            failed_count += 1
+
+    long_term_memory.save()
+
+    return success_response(
+        data={
+            "total": len(files),
+            "success_count": success_count,
+            "failed_count": failed_count,
+            "results": results,
+        },
+        message=f"上传完成：成功{success_count}个，失败{failed_count}个",
+    )
+
+
+@app.get("/api/knowledge/documents")
+async def list_knowledge_documents(
+    category: str | None = None,
+    page: int = 1,
+    page_size: int = 20,
+    db: Session = Depends(get_db),
+):
+    """获取知识库文档列表"""
+    start = (page - 1) * page_size
+    end = start + page_size
+
+    documents = []
+    seen_files = set()
+
+    for doc in long_term_memory._documents:
+        metadata = doc.get("metadata", {})
+        file_id = metadata.get("file_id", "")
+
+        if category and metadata.get("category") != category:
+            continue
+
+        if file_id and file_id not in seen_files:
+            seen_files.add(file_id)
+            documents.append({
+                "file_id": file_id,
+                "file_name": metadata.get("file_name", doc.get("source", "")),
+                "category": metadata.get("category", "general"),
+                "chunks_count": sum(
+                    1 for d in long_term_memory._documents
+                    if d.get("metadata", {}).get("file_id") == file_id
+                ),
+            })
+
+    total = len(documents)
+    paginated = documents[start:end]
+
+    return success_response(
+        data={
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "list": paginated,
+        },
+        message="获取知识库文档成功",
+    )
+
+
+@app.delete("/api/knowledge/documents/{file_id}")
+async def delete_knowledge_document(file_id: str, db: Session = Depends(get_db)):
+    """删除知识库文档"""
+    global _documents
+    global _index
+
+    chunks_to_remove = [
+        i for i, doc in enumerate(long_term_memory._documents)
+        if doc.get("metadata", {}).get("file_id") == file_id
+    ]
+
+    if not chunks_to_remove:
+        raise HTTPException(status_code=404, detail="文档不存在")
+
+    for idx in reversed(chunks_to_remove):
+        long_term_memory._documents.pop(idx)
+
+    if long_term_memory._index is not None:
+        try:
+            import numpy as np
+            remaining_count = long_term_memory._index.ntotal
+            if remaining_count > 0:
+                new_index = faiss.IndexFlatIP(long_term_memory.embedding_dim)
+                for doc in long_term_memory._documents:
+                    embedding = long_term_memory._simple_embedding(doc["content"])
+                    new_index.add(embedding.reshape(1, -1))
+                long_term_memory._index = new_index
+            else:
+                long_term_memory._index = faiss.IndexFlatIP(long_term_memory.embedding_dim)
+        except Exception as e:
+            print(f"[重建索引失败] {e}")
+
+    file_path = os.path.join(UPLOAD_DIR, f"{file_id}")
+    for ext in ALLOWED_EXTENSIONS:
+        full_path = file_path + ext
+        if os.path.exists(full_path):
+            os.remove(full_path)
+
+    long_term_memory.save()
+
+    return success_response(
+        data={"file_id": file_id, "removed_chunks": len(chunks_to_remove)},
+        message="文档删除成功",
     )
 
 

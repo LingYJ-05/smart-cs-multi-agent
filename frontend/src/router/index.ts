@@ -6,6 +6,7 @@ import ChatSessionPage from '@/components/Chat/ChatSessionPage.vue'
 import HistoryPage from '@/components/History/HistoryPage.vue'
 import ToolsCenterPage from '@/components/Tools/ToolsCenterPage.vue'
 import SystemMonitorPage from '@/components/Metrics/SystemMonitorPage.vue'
+import KnowledgeBasePage from '@/components/Knowledge/KnowledgeBasePage.vue'
 
 const routes: RouteRecordRaw[] = [
   {
@@ -33,6 +34,11 @@ const routes: RouteRecordRaw[] = [
         path: '/tools',
         name: 'Tools',
         component: ToolsCenterPage,
+      },
+      {
+        path: '/knowledge',
+        name: 'Knowledge',
+        component: KnowledgeBasePage,
       },
       {
         path: '/monitor',

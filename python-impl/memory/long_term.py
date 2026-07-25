@@ -168,41 +168,123 @@ class LongTermMemory:
         return count
 
     @staticmethod
-    def _chunk_text(text: str, chunk_size: int = 512, overlap: int = 128) -> list[str]:
+    def _split_text_by_separator(text: str, separator: str) -> list[str]:
+        """按分隔符分割文本，保留分隔符"""
+        if not separator:
+            return list(text)
+        parts = text.split(separator)
+        return [p + separator for p in parts[:-1]] + [parts[-1]]
+
+    @staticmethod
+    def _merge_small_chunks(chunks: list[str], chunk_size: int, separator: str) -> list[str]:
+        """合并过小的分块"""
+        merged = []
+        current = ""
+        for chunk in chunks:
+            if len(current) + len(chunk) <= chunk_size:
+                current += chunk
+            else:
+                if current:
+                    merged.append(current.strip())
+                current = chunk
+        if current.strip():
+            merged.append(current.strip())
+        return merged
+
+    @classmethod
+    def _recursive_chunk(
+        cls,
+        text: str,
+        chunk_size: int,
+        overlap: int,
+        separators: list[str],
+        separator_idx: int = 0,
+    ) -> list[str]:
         """
-        文本分块：固定长度 + 重叠窗口。
-        优先按段落分割，段落过长则按句子分割。
+        递归文档切块：按分隔符层级逐级细分。
+        分隔符层级：段落(\\n\\n) → 换行(\\n) → 中文句号(。) → 英文句号(.) → 分号(；) → 逗号(，) → 空格 → 字符
         """
-        paragraphs = text.split("\n\n")
+        if separator_idx >= len(separators):
+            chunks = []
+            for i in range(0, len(text), chunk_size):
+                chunks.append(text[i:i + chunk_size])
+            return chunks
+
+        separator = separators[separator_idx]
+        splits = cls._split_text_by_separator(text, separator)
+
+        if len(splits) <= 1:
+            return cls._recursive_chunk(text, chunk_size, overlap, separators, separator_idx + 1)
+
         chunks = []
         current_chunk = ""
 
-        for para in paragraphs:
-            para = para.strip()
-            if not para:
-                continue
-
-            if len(current_chunk) + len(para) <= chunk_size:
-                current_chunk += para + "\n\n"
+        for split in splits:
+            if len(current_chunk) + len(split) <= chunk_size:
+                current_chunk += split
             else:
                 if current_chunk:
                     chunks.append(current_chunk.strip())
-                    overlap_text = current_chunk[-overlap:] if len(current_chunk) > overlap else current_chunk
-                    current_chunk = overlap_text + para + "\n\n"
+
+                if len(split) > chunk_size:
+                    sub_chunks = cls._recursive_chunk(
+                        split, chunk_size, overlap, separators, separator_idx + 1
+                    )
+                    chunks.extend(sub_chunks)
+                    current_chunk = ""
                 else:
-                    sentences = para.replace("。", "。\n").replace(".", ".\n").split("\n")
-                    for sentence in sentences:
-                        sentence = sentence.strip()
-                        if not sentence:
-                            continue
-                        if len(current_chunk) + len(sentence) <= chunk_size:
-                            current_chunk += sentence
-                        else:
-                            if current_chunk:
-                                chunks.append(current_chunk.strip())
-                            current_chunk = sentence
+                    overlap_text = current_chunk[-overlap:] if current_chunk and len(current_chunk) > overlap else ""
+                    current_chunk = overlap_text + split
 
         if current_chunk.strip():
             chunks.append(current_chunk.strip())
 
-        return chunks if chunks else [text[:chunk_size]]
+        return chunks
+
+    @staticmethod
+    def _chunk_text(text: str, chunk_size: int = 512, overlap: int = 128) -> list[str]:
+        """
+        递归文档切块（RecursiveCharacterTextSplitter）。
+        
+        分层策略：
+        1. 段落边界（\\n\\n）- 优先保持段落完整性
+        2. 换行符（\\n）- 保持行完整性
+        3. 中文句号（。）- 保持中文句子完整性
+        4. 英文句号（.）- 保持英文句子完整性
+        5. 分号（；/;）- 保持分句完整性
+        6. 逗号（，/,）- 保持短语完整性
+        7. 空格 - 保持词语完整性
+        8. 字符 - 最后兜底，按字符切割
+        
+        同时应用重叠窗口确保上下文连贯。
+        """
+        if not text or not text.strip():
+            return []
+
+        if len(text) <= chunk_size:
+            return [text.strip()]
+
+        separators = [
+            "\n\n",
+            "\n",
+            "。",
+            ".",
+            "；",
+            ";",
+            "，",
+            ",",
+            " ",
+            "",
+        ]
+
+        chunks = LongTermMemory._recursive_chunk(
+            text, chunk_size, overlap, separators
+        )
+
+        result = []
+        for chunk in chunks:
+            chunk = chunk.strip()
+            if chunk:
+                result.append(chunk)
+
+        return result if result else [text[:chunk_size]]

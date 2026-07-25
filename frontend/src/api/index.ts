@@ -176,6 +176,37 @@ export const toolCallLogApi = {
   },
 };
 
+export const knowledgeApi = {
+  uploadFile: async (file: File, category: string = "general"): Promise<any> => {
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("category", category);
+    return api.post("/api/knowledge/upload", formData, {
+      headers: { "Content-Type": "multipart/form-data" },
+    });
+  },
+  uploadBatch: async (files: File[], category: string = "general"): Promise<any> => {
+    const formData = new FormData();
+    files.forEach((file) => {
+      formData.append("files", file);
+    });
+    formData.append("category", category);
+    return api.post("/api/knowledge/upload-batch", formData, {
+      headers: { "Content-Type": "multipart/form-data" },
+    });
+  },
+  listDocuments: async (params?: { category?: string; page?: number; page_size?: number }): Promise<any> => {
+    const query = new URLSearchParams();
+    if (params?.category) query.set("category", params.category);
+    if (params?.page) query.set("page", params.page.toString());
+    if (params?.page_size) query.set("page_size", params.page_size.toString());
+    return api.get(`/api/knowledge/documents?${query.toString()}`);
+  },
+  deleteDocument: async (fileId: string): Promise<any> => {
+    return api.delete(`/api/knowledge/documents/${fileId}`);
+  },
+};
+
 export const ticketApi = {
   listTickets: async (params?: {
     user_id?: string;

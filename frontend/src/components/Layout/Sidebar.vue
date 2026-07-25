@@ -49,12 +49,14 @@ import {
   Monitor,
   User,
   SwitchButton,
-} from "@element-plus/icons-vue";
+  Collection,
+} from "@element-plus/icons-vue"
 
 const router = useRouter();
 
 const menuItems = [
   { id: "chat", label: "会话聊天", icon: ChatLineRound, path: "/chat" },
+  { id: "knowledge", label: "知识库", icon: Collection, path: "/knowledge" },
   { id: "history", label: "对话历史", icon: Clock, path: "/history" },
   { id: "tools", label: "工具中心", icon: Setting, path: "/tools" },
   { id: "monitor", label: "系统监控", icon: Monitor, path: "/monitor" },
